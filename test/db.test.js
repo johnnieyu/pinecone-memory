@@ -72,9 +72,11 @@ describe("PineconeMemoryDB", () => {
   describe("store", () => {
     it("calls upsertRecords with the correct shape", async () => {
       await db.store("id-1", "hello world", { category: "fact" });
-      expect(mockUpsertRecords).toHaveBeenCalledWith([
-        { _id: "id-1", content: "hello world", category: "fact" },
-      ]);
+      expect(mockUpsertRecords).toHaveBeenCalledWith({
+        records: [
+          { _id: "id-1", content: "hello world", category: "fact" },
+        ],
+      });
     });
   });
 

@@ -17,12 +17,10 @@ const mockIndex = vi.fn(() => ({ namespace: mockNamespace }));
 const mockListIndexes = vi.fn().mockResolvedValue({
   indexes: [{ name: "openclaw-memory" }],
 });
-const mockCreateIndexForModel = vi.fn().mockResolvedValue({});
 
 vi.mock("@pinecone-database/pinecone", () => ({
   Pinecone: vi.fn().mockImplementation(() => ({
     listIndexes: mockListIndexes,
-    createIndexForModel: mockCreateIndexForModel,
     index: mockIndex,
   })),
 }));
@@ -32,56 +30,63 @@ vi.mock("node:crypto", () => ({
   randomUUID: vi.fn(() => "test-uuid-1234"),
 }));
 
-const { default: activate } = await import("../index.js");
+const { default: register } = await import("../index.js");
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — mock OpenClaw plugin API
 // ---------------------------------------------------------------------------
-function createMockContext(configOverrides = {}) {
+function createMockApi(configOverrides = {}) {
   const hooks = {};
   const tools = {};
-  const commands = {};
+  let cliSetup = null;
 
   return {
-    config: { pineconeApiKey: "test-key", ...configOverrides },
-    onHook(name, handler) {
+    pluginConfig: { pineconeApiKey: "test-key", ...configOverrides },
+    logger: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    },
+    on(name, handler) {
       hooks[name] = handler;
     },
     registerTool(tool) {
       tools[tool.name] = tool;
     },
-    registerCommand(cmd) {
-      commands[cmd.name] = cmd;
+    registerCli(setup) {
+      cliSetup = setup;
     },
     hooks,
     tools,
-    commands,
+    cliSetup,
   };
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe("plugin – activate", () => {
-  let ctx;
+describe("plugin – register", () => {
+  let api;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockListIndexes.mockResolvedValue({
       indexes: [{ name: "openclaw-memory" }],
     });
-    ctx = createMockContext();
-    activate(ctx);
+    api = createMockApi();
+    register(api);
   });
 
-  it("registers hooks, tools, and commands", () => {
-    expect(ctx.hooks.before_agent_start).toBeDefined();
-    expect(ctx.hooks.agent_end).toBeDefined();
-    expect(ctx.tools.memory_store).toBeDefined();
-    expect(ctx.tools.memory_search).toBeDefined();
-    expect(ctx.tools.memory_forget).toBeDefined();
-    expect(ctx.commands["pinecone-memory search"]).toBeDefined();
-    expect(ctx.commands["pinecone-memory stats"]).toBeDefined();
+  it("registers hooks, tools, and logs init message", () => {
+    expect(api.hooks.before_agent_start).toBeDefined();
+    expect(api.hooks.agent_end).toBeDefined();
+    expect(api.tools.memory_store).toBeDefined();
+    expect(api.tools.memory_search).toBeDefined();
+    expect(api.tools.memory_forget).toBeDefined();
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("pinecone-memory: registered")
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -89,8 +94,8 @@ describe("plugin – activate", () => {
   // -------------------------------------------------------------------------
   describe("recall hook", () => {
     it("skips short prompts", async () => {
-      const result = await ctx.hooks.before_agent_start({ prompt: "hi" });
-      expect(result).toEqual({});
+      const result = await api.hooks.before_agent_start({ prompt: "hi" });
+      expect(result).toBeUndefined();
       expect(mockSearchRecords).not.toHaveBeenCalled();
     });
 
@@ -102,7 +107,7 @@ describe("plugin – activate", () => {
           ],
         },
       });
-      const result = await ctx.hooks.before_agent_start({
+      const result = await api.hooks.before_agent_start({
         prompt: "What theme do I like?",
       });
       expect(result.prependContext).toContain("<relevant-memories>");
@@ -111,22 +116,25 @@ describe("plugin – activate", () => {
       expect(result.prependContext).toContain("User prefers dark mode");
     });
 
-    it("returns empty object when no hits", async () => {
+    it("returns undefined when no hits", async () => {
       mockSearchRecords.mockResolvedValueOnce({
         result: { hits: [] },
       });
-      const result = await ctx.hooks.before_agent_start({
+      const result = await api.hooks.before_agent_start({
         prompt: "Tell me something random",
       });
-      expect(result).toEqual({});
+      expect(result).toBeUndefined();
     });
 
     it("handles errors gracefully", async () => {
       mockSearchRecords.mockRejectedValueOnce(new Error("network down"));
-      const result = await ctx.hooks.before_agent_start({
+      const result = await api.hooks.before_agent_start({
         prompt: "Some valid prompt here",
       });
-      expect(result).toEqual({});
+      expect(result).toBeUndefined();
+      expect(api.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("recall failed")
+      );
     });
   });
 
@@ -136,23 +144,25 @@ describe("plugin – activate", () => {
   describe("capture hook", () => {
     it("extracts text from messages and stores capturable content", async () => {
       mockSearchRecords.mockResolvedValue({ result: { hits: [] } }); // no dup
-      await ctx.hooks.agent_end({
+      await api.hooks.agent_end({
         messages: [
           { role: "user", content: "I always prefer using TypeScript for new projects" },
         ],
       });
-      expect(mockUpsertRecords).toHaveBeenCalledWith([
-        expect.objectContaining({
-          _id: "test-uuid-1234",
-          content: "I always prefer using TypeScript for new projects",
-          category: "preference",
-        }),
-      ]);
+      expect(mockUpsertRecords).toHaveBeenCalledWith({
+        records: [
+          expect.objectContaining({
+            _id: "test-uuid-1234",
+            content: "I always prefer using TypeScript for new projects",
+            category: "preference",
+          }),
+        ],
+      });
     });
 
     it("strips memory tags before evaluating", async () => {
       mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
-      await ctx.hooks.agent_end({
+      await api.hooks.agent_end({
         messages: [
           {
             role: "user",
@@ -162,13 +172,13 @@ describe("plugin – activate", () => {
         ],
       });
       // The stored content should not contain the memory tags
-      const storedRecord = mockUpsertRecords.mock.calls[0][0][0];
+      const storedRecord = mockUpsertRecords.mock.calls[0][0].records[0];
       expect(storedRecord.content).not.toContain("<relevant-memories>");
       expect(storedRecord.content).toBe("I always prefer dark mode");
     });
 
     it("skips messages that do not match capture patterns", async () => {
-      await ctx.hooks.agent_end({
+      await api.hooks.agent_end({
         messages: [{ role: "user", content: "The quick brown fox jumps over the lazy dog" }],
       });
       expect(mockUpsertRecords).not.toHaveBeenCalled();
@@ -180,7 +190,7 @@ describe("plugin – activate", () => {
           hits: [{ _id: "existing", _score: 0.99, content: "already there" }],
         },
       });
-      await ctx.hooks.agent_end({
+      await api.hooks.agent_end({
         messages: [
           { role: "user", content: "I always prefer using TypeScript for new projects" },
         ],
@@ -190,7 +200,7 @@ describe("plugin – activate", () => {
 
     it("handles array content blocks", async () => {
       mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
-      await ctx.hooks.agent_end({
+      await api.hooks.agent_end({
         messages: [
           {
             role: "assistant",
@@ -210,12 +220,12 @@ describe("plugin – activate", () => {
   describe("memory_store tool", () => {
     it("stores a new memory", async () => {
       mockSearchRecords.mockResolvedValueOnce({ result: { hits: [] } });
-      const result = await ctx.tools.memory_store.execute({
+      const result = await api.tools.memory_store.execute("call-1", {
         text: "Use bun instead of npm",
         category: "preference",
       });
-      expect(result.result).toContain("Memory stored");
-      expect(result.result).toContain("test-uuid-1234");
+      expect(result.content[0].text).toContain("Memory stored");
+      expect(result.content[0].text).toContain("test-uuid-1234");
       expect(mockUpsertRecords).toHaveBeenCalled();
     });
 
@@ -225,19 +235,19 @@ describe("plugin – activate", () => {
           hits: [{ _id: "dup-id", _score: 0.97, content: "dup" }],
         },
       });
-      const result = await ctx.tools.memory_store.execute({
+      const result = await api.tools.memory_store.execute("call-1", {
         text: "Use bun instead of npm",
       });
-      expect(result.result).toContain("Duplicate detected");
+      expect(result.content[0].text).toContain("Duplicate detected");
       expect(mockUpsertRecords).not.toHaveBeenCalled();
     });
 
     it("auto-detects category when not provided", async () => {
       mockSearchRecords.mockResolvedValueOnce({ result: { hits: [] } });
-      await ctx.tools.memory_store.execute({
+      await api.tools.memory_store.execute("call-1", {
         text: "There is a bug in the auth module",
       });
-      const storedRecord = mockUpsertRecords.mock.calls[0][0][0];
+      const storedRecord = mockUpsertRecords.mock.calls[0][0].records[0];
       expect(storedRecord.category).toBe("technical");
     });
   });
@@ -260,8 +270,8 @@ describe("plugin – activate", () => {
           ],
         },
       });
-      const result = await ctx.tools.memory_search.execute({ query: "theme" });
-      const parsed = JSON.parse(result.result);
+      const result = await api.tools.memory_search.execute("call-1", { query: "theme" });
+      const parsed = JSON.parse(result.content[0].text);
       expect(parsed).toHaveLength(1);
       expect(parsed[0].id).toBe("mem-1");
       expect(parsed[0].score).toBe("0.80");
@@ -269,8 +279,8 @@ describe("plugin – activate", () => {
 
     it("handles empty results", async () => {
       mockSearchRecords.mockResolvedValueOnce({ result: { hits: [] } });
-      const result = await ctx.tools.memory_search.execute({ query: "nothing" });
-      expect(result.result).toBe("No matching memories found.");
+      const result = await api.tools.memory_search.execute("call-1", { query: "nothing" });
+      expect(result.content[0].text).toBe("No matching memories found.");
     });
   });
 
@@ -279,11 +289,11 @@ describe("plugin – activate", () => {
   // -------------------------------------------------------------------------
   describe("memory_forget tool", () => {
     it("deletes by ID", async () => {
-      const result = await ctx.tools.memory_forget.execute({
+      const result = await api.tools.memory_forget.execute("call-1", {
         memoryId: "abc-123",
       });
       expect(mockDeleteOne).toHaveBeenCalledWith("abc-123");
-      expect(result.result).toContain("abc-123 deleted");
+      expect(result.content[0].text).toContain("abc-123 deleted");
     });
 
     it("auto-deletes high-confidence match from query", async () => {
@@ -294,11 +304,11 @@ describe("plugin – activate", () => {
           ],
         },
       });
-      const result = await ctx.tools.memory_forget.execute({
+      const result = await api.tools.memory_forget.execute("call-1", {
         query: "old preference",
       });
       expect(mockDeleteOne).toHaveBeenCalledWith("auto-del");
-      expect(result.result).toContain("Deleted memory");
+      expect(result.content[0].text).toContain("Deleted memory");
     });
 
     it("lists candidates for ambiguous matches", async () => {
@@ -311,26 +321,26 @@ describe("plugin – activate", () => {
           ],
         },
       });
-      const result = await ctx.tools.memory_forget.execute({
+      const result = await api.tools.memory_forget.execute("call-1", {
         query: "something vague",
       });
-      expect(result.result).toContain("Multiple matches found");
-      expect(result.result).toContain("c1");
-      expect(result.result).toContain("c2");
+      expect(result.content[0].text).toContain("Multiple matches found");
+      expect(result.content[0].text).toContain("c1");
+      expect(result.content[0].text).toContain("c2");
       expect(mockDeleteOne).not.toHaveBeenCalled();
     });
 
     it("requires memoryId or query", async () => {
-      const result = await ctx.tools.memory_forget.execute({});
-      expect(result.error).toContain("Provide either memoryId or query");
+      const result = await api.tools.memory_forget.execute("call-1", {});
+      expect(result.content[0].text).toContain("Provide either memoryId or query");
     });
 
     it("handles no matches for query", async () => {
       mockSearchRecords.mockResolvedValueOnce({ result: { hits: [] } });
-      const result = await ctx.tools.memory_forget.execute({
+      const result = await api.tools.memory_forget.execute("call-1", {
         query: "nonexistent",
       });
-      expect(result.result).toContain("No matching memories found");
+      expect(result.content[0].text).toContain("No matching memories found");
     });
   });
 });
@@ -340,16 +350,16 @@ describe("plugin – activate", () => {
 // ---------------------------------------------------------------------------
 describe("plugin – disabled hooks", () => {
   it("does not register recall hook when autoRecall is false", () => {
-    const ctx = createMockContext({ autoRecall: false });
-    activate(ctx);
-    expect(ctx.hooks.before_agent_start).toBeUndefined();
-    expect(ctx.hooks.agent_end).toBeDefined();
+    const api = createMockApi({ autoRecall: false });
+    register(api);
+    expect(api.hooks.before_agent_start).toBeUndefined();
+    expect(api.hooks.agent_end).toBeDefined();
   });
 
   it("does not register capture hook when autoCapture is false", () => {
-    const ctx = createMockContext({ autoCapture: false });
-    activate(ctx);
-    expect(ctx.hooks.before_agent_start).toBeDefined();
-    expect(ctx.hooks.agent_end).toBeUndefined();
+    const api = createMockApi({ autoCapture: false });
+    register(api);
+    expect(api.hooks.before_agent_start).toBeDefined();
+    expect(api.hooks.agent_end).toBeUndefined();
   });
 });

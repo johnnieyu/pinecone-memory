@@ -82,13 +82,15 @@ class PineconeMemoryDB {
 
   async store(id, text, metadata = {}) {
     await this.ensureIndex();
-    await this._index.upsertRecords([
-      {
-        _id: id,
-        content: text,
-        ...metadata,
-      },
-    ]);
+    await this._index.upsertRecords({
+      records: [
+        {
+          _id: id,
+          content: text,
+          ...metadata,
+        },
+      ],
+    });
   }
 
   async search(query, topK = 5, threshold = 0.3) {
@@ -118,14 +120,11 @@ class PineconeMemoryDB {
 export { resolveEnvVars, shouldCapture, detectCategory, stripMemoryTags, PineconeMemoryDB };
 
 // ---------------------------------------------------------------------------
-// Plugin export
+// Plugin export (OpenClaw plugin API)
 // ---------------------------------------------------------------------------
 
-export default function activate(context) {
-  console.log("[pinecone-memory] activate() called");
-  console.log("[pinecone-memory] context keys:", Object.keys(context));
-  console.log("[pinecone-memory] context.config:", JSON.stringify(context.config, null, 2));
-  const config = context.config ?? {};
+export default function register(api) {
+  const config = api.pluginConfig ?? {};
   const db = new PineconeMemoryDB(config);
 
   const autoCapture = config.autoCapture !== false;
@@ -133,17 +132,21 @@ export default function activate(context) {
   const topK = config.topK ?? 5;
   const similarityThreshold = config.similarityThreshold ?? 0.3;
 
+  api.logger.info(
+    `pinecone-memory: registered (index: ${db.indexName}, ns: ${db.namespace}, autoRecall: ${autoRecall}, autoCapture: ${autoCapture})`
+  );
+
   // -------------------------------------------------------------------------
   // Hook: before_agent_start — Recall
   // -------------------------------------------------------------------------
   if (autoRecall) {
-    context.onHook("before_agent_start", async (event) => {
+    api.on("before_agent_start", async (event) => {
       try {
         const prompt = event.prompt?.trim();
-        if (!prompt || prompt.length < 5) return {};
+        if (!prompt || prompt.length < 5) return;
 
         const hits = await db.search(prompt, topK, similarityThreshold);
-        if (hits.length === 0) return {};
+        if (hits.length === 0) return;
 
         const lines = hits.map((hit) => {
           const cat = hit.category ? ` [${hit.category}]` : "";
@@ -157,11 +160,10 @@ export default function activate(context) {
           "</relevant-memories>",
         ].join("\n");
 
-        console.log(`[pinecone-memory] Recalled ${hits.length} memor${hits.length === 1 ? "y" : "ies"}.`);
+        api.logger.info(`pinecone-memory: recalled ${hits.length} memor${hits.length === 1 ? "y" : "ies"}`);
         return { prependContext: block };
       } catch (err) {
-        console.error("[pinecone-memory] Recall error:", err.message);
-        return {};
+        api.logger.warn(`pinecone-memory: recall failed: ${err.message}`);
       }
     });
   }
@@ -170,7 +172,7 @@ export default function activate(context) {
   // Hook: agent_end — Capture
   // -------------------------------------------------------------------------
   if (autoCapture) {
-    context.onHook("agent_end", async (event) => {
+    api.on("agent_end", async (event) => {
       try {
         const messages = (event.messages ?? []).slice(-10);
         const captured = [];
@@ -203,12 +205,12 @@ export default function activate(context) {
         }
 
         if (captured.length > 0) {
-          console.log(
-            `[pinecone-memory] Captured ${captured.length} memor${captured.length === 1 ? "y" : "ies"}: ${captured.map((c) => c.category).join(", ")}`
+          api.logger.info(
+            `pinecone-memory: captured ${captured.length} memor${captured.length === 1 ? "y" : "ies"}: ${captured.map((c) => c.category).join(", ")}`
           );
         }
       } catch (err) {
-        console.error("[pinecone-memory] Capture error:", err.message);
+        api.logger.warn(`pinecone-memory: capture failed: ${err.message}`);
       }
     });
   }
@@ -216,7 +218,7 @@ export default function activate(context) {
   // -------------------------------------------------------------------------
   // Tool: memory_store
   // -------------------------------------------------------------------------
-  context.registerTool({
+  api.registerTool({
     name: "memory_store",
     description:
       "Store a fact, preference, or decision in long-term memory. Use this when the user explicitly asks you to remember something.",
@@ -235,14 +237,14 @@ export default function activate(context) {
       },
       required: ["text"],
     },
-    async execute({ text, category }) {
+    async execute(_toolCallId, { text, category }) {
       try {
         await db.ensureIndex();
 
         const dup = await db.isDuplicate(text);
         if (dup) {
           return {
-            result: `Duplicate detected — a very similar memory already exists (score: ${dup._score.toFixed(2)}, id: ${dup._id}). Not stored.`,
+            content: [{ type: "text", text: `Duplicate detected — a very similar memory already exists (score: ${dup._score.toFixed(2)}, id: ${dup._id}). Not stored.` }],
           };
         }
 
@@ -255,9 +257,9 @@ export default function activate(context) {
           capturedAt: new Date().toISOString(),
         });
 
-        return { result: `Memory stored (id: ${id}, category: ${cat}).` };
+        return { content: [{ type: "text", text: `Memory stored (id: ${id}, category: ${cat}).` }] };
       } catch (err) {
-        return { error: `Failed to store memory: ${err.message}` };
+        return { content: [{ type: "text", text: `Failed to store memory: ${err.message}` }] };
       }
     },
   });
@@ -265,7 +267,7 @@ export default function activate(context) {
   // -------------------------------------------------------------------------
   // Tool: memory_search
   // -------------------------------------------------------------------------
-  context.registerTool({
+  api.registerTool({
     name: "memory_search",
     description:
       "Search long-term memory for relevant facts, preferences, or decisions.",
@@ -283,13 +285,13 @@ export default function activate(context) {
       },
       required: ["query"],
     },
-    async execute({ query, limit }) {
+    async execute(_toolCallId, { query, limit }) {
       try {
         const k = limit ?? topK;
         const hits = await db.search(query, k, similarityThreshold);
 
         if (hits.length === 0) {
-          return { result: "No matching memories found." };
+          return { content: [{ type: "text", text: "No matching memories found." }] };
         }
 
         const formatted = hits.map((hit) => ({
@@ -300,9 +302,9 @@ export default function activate(context) {
           capturedAt: hit.capturedAt ?? null,
         }));
 
-        return { result: JSON.stringify(formatted, null, 2) };
+        return { content: [{ type: "text", text: JSON.stringify(formatted, null, 2) }] };
       } catch (err) {
-        return { error: `Search failed: ${err.message}` };
+        return { content: [{ type: "text", text: `Search failed: ${err.message}` }] };
       }
     },
   });
@@ -310,7 +312,7 @@ export default function activate(context) {
   // -------------------------------------------------------------------------
   // Tool: memory_forget
   // -------------------------------------------------------------------------
-  context.registerTool({
+  api.registerTool({
     name: "memory_forget",
     description:
       "Delete a memory by ID, or search for and delete a matching memory.",
@@ -327,22 +329,22 @@ export default function activate(context) {
         },
       },
     },
-    async execute({ memoryId, query }) {
+    async execute(_toolCallId, { memoryId, query }) {
       try {
         await db.ensureIndex();
 
         if (memoryId) {
           await db.delete(memoryId);
-          return { result: `Memory ${memoryId} deleted.` };
+          return { content: [{ type: "text", text: `Memory ${memoryId} deleted.` }] };
         }
 
         if (!query) {
-          return { error: "Provide either memoryId or query." };
+          return { content: [{ type: "text", text: "Provide either memoryId or query." }] };
         }
 
         const hits = await db.search(query, 5, similarityThreshold);
         if (hits.length === 0) {
-          return { result: "No matching memories found to delete." };
+          return { content: [{ type: "text", text: "No matching memories found to delete." }] };
         }
 
         // Auto-delete if single high-confidence match
@@ -350,7 +352,7 @@ export default function activate(context) {
           const target = hits[0];
           await db.delete(target._id);
           return {
-            result: `Deleted memory (id: ${target._id}, score: ${target._score.toFixed(2)}): "${(target.content ?? "").slice(0, 100)}"`,
+            content: [{ type: "text", text: `Deleted memory (id: ${target._id}, score: ${target._score.toFixed(2)}): "${(target.content ?? "").slice(0, 100)}"` }],
           };
         }
 
@@ -362,10 +364,10 @@ export default function activate(context) {
         }));
 
         return {
-          result: `Multiple matches found. Specify a memoryId to delete:\n${JSON.stringify(candidates, null, 2)}`,
+          content: [{ type: "text", text: `Multiple matches found. Specify a memoryId to delete:\n${JSON.stringify(candidates, null, 2)}` }],
         };
       } catch (err) {
-        return { error: `Forget failed: ${err.message}` };
+        return { content: [{ type: "text", text: `Forget failed: ${err.message}` }] };
       }
     },
   });
@@ -373,57 +375,50 @@ export default function activate(context) {
   // -------------------------------------------------------------------------
   // CLI: pinecone-memory search <query> [--limit N]
   // -------------------------------------------------------------------------
-  context.registerCommand({
-    name: "pinecone-memory search",
-    description: "Search memories from the command line.",
-    parameters: [
-      { name: "query", type: "string", required: true, description: "Search query" },
-      { name: "--limit", type: "number", required: false, description: "Max results" },
-    ],
-    async execute(args) {
-      try {
-        const limit = args["--limit"] ?? topK;
-        const hits = await db.search(args.query, limit, similarityThreshold);
+  api.registerCli(({ program }) => {
+    const cmd = program.command("pinecone-memory").description("Pinecone memory plugin commands");
 
-        if (hits.length === 0) {
-          console.log("No matching memories found.");
-          return;
+    cmd.command("search <query>")
+      .description("Search memories")
+      .option("--limit <n>", "Max results", parseInt)
+      .action(async (query, opts) => {
+        try {
+          const limit = opts.limit ?? topK;
+          const hits = await db.search(query, limit, similarityThreshold);
+
+          if (hits.length === 0) {
+            console.log("No matching memories found.");
+            return;
+          }
+
+          for (const hit of hits) {
+            const cat = hit.category ? ` [${hit.category}]` : "";
+            console.log(`  ${hit._score.toFixed(2)}${cat}  ${hit._id}`);
+            console.log(`    ${hit.content}`);
+            console.log();
+          }
+        } catch (err) {
+          console.error("Search error:", err.message);
         }
+      });
 
-        for (const hit of hits) {
-          const cat = hit.category ? ` [${hit.category}]` : "";
-          console.log(`  ${hit._score.toFixed(2)}${cat}  ${hit._id}`);
-          console.log(`    ${hit.content}`);
-          console.log();
+    cmd.command("stats")
+      .description("Show memory plugin status and configuration")
+      .action(async () => {
+        try {
+          await db.ensureIndex();
+
+          console.log("[pinecone-memory] Configuration:");
+          console.log(`  Index:         ${db.indexName}`);
+          console.log(`  Namespace:     ${db.namespace}`);
+          console.log(`  Auto-capture:  ${autoCapture}`);
+          console.log(`  Auto-recall:   ${autoRecall}`);
+          console.log(`  Top-K:         ${topK}`);
+          console.log(`  Threshold:     ${similarityThreshold}`);
+          console.log(`  Dedup:         ${db.deduplicationThreshold}`);
+        } catch (err) {
+          console.error("Stats error:", err.message);
         }
-      } catch (err) {
-        console.error("Search error:", err.message);
-      }
-    },
-  });
-
-  // -------------------------------------------------------------------------
-  // CLI: pinecone-memory stats
-  // -------------------------------------------------------------------------
-  context.registerCommand({
-    name: "pinecone-memory stats",
-    description: "Show memory plugin status and configuration.",
-    async execute() {
-      try {
-        await db.ensureIndex();
-
-        console.log("[pinecone-memory] Configuration:");
-        console.log(`  Index:         ${db.indexName}`);
-        console.log(`  Namespace:     ${db.namespace}`);
-        console.log(`  Model:         ${db.embeddingModel}`);
-        console.log(`  Auto-capture:  ${autoCapture}`);
-        console.log(`  Auto-recall:   ${autoRecall}`);
-        console.log(`  Top-K:         ${topK}`);
-        console.log(`  Threshold:     ${similarityThreshold}`);
-        console.log(`  Dedup:         ${db.deduplicationThreshold}`);
-      } catch (err) {
-        console.error("Stats error:", err.message);
-      }
-    },
-  });
+      });
+  }, { commands: ["pinecone-memory"] });
 }

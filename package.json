@@ -24,5 +24,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
   }
 }
