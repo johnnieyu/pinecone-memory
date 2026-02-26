@@ -8,9 +8,12 @@ Your agent forgets everything between sessions. This plugin fixes that. It watch
 
 **Auto-Recall** — Before the agent responds, the plugin searches Pinecone for memories that match the current prompt and injects them into context via `<relevant-memories>` tags.
 
-**Auto-Capture** — After the agent responds, the plugin scans the last 10 messages for facts, preferences, and decisions. Matching text is deduplicated, categorized, and stored automatically.
+**Auto-Capture** — After the agent responds, the plugin extracts facts, preferences, and decisions from the last 10 messages and stores them. Two capture modes are available:
 
-Both run silently. No prompting, no manual calls.
+- **Heuristic** (default) — Fast regex-based pattern matching. No external API calls required.
+- **LLM** — Uses OpenAI (gpt-4o-mini by default) to extract concise facts and intelligently reconcile them against existing memories with ADD/UPDATE/DELETE/NONE decisions. Produces significantly more accurate, concise memories. Falls back to heuristic on any LLM failure.
+
+Both hooks run silently. No prompting, no manual calls.
 
 ## Setup
 
@@ -113,9 +116,7 @@ The `source` field must be one of: `"npm"`, `"archive"`, or `"path"`. For a loca
 }
 ```
 
-#### Full config example
-
-Here's a complete `plugins` block with all available options:
+#### Full config example (heuristic mode)
 
 ```json5
 {
@@ -148,15 +149,54 @@ Here's a complete `plugins` block with all available options:
 }
 ```
 
-#### Environment variable
+#### Full config example (LLM mode)
 
-Set your Pinecone API key as an environment variable so the `${PINECONE_API_KEY}` reference resolves:
+LLM mode uses OpenAI to extract and reconcile facts. This produces higher-quality memories but requires an OpenAI API key:
+
+```json5
+{
+  "plugins": {
+    "installs": {
+      "openclaw-memory-pinecone": {
+        "source": "path",
+        "sourcePath": "/Users/you/repos/pinecone-memory",
+        "installPath": "/Users/you/.openclaw/extensions/openclaw-memory-pinecone",
+        "version": "1.0.0",
+        "resolvedName": "openclaw-memory-pinecone"
+      }
+    },
+    "entries": {
+      "openclaw-memory-pinecone": {
+        "enabled": true,
+        "config": {
+          "pineconeApiKey": "${PINECONE_API_KEY}",
+          "indexName": "openclaw-woodhouse",
+          "namespace": "default",
+          "autoRecall": true,
+          "autoCapture": true,
+          "captureMode": "llm",
+          "openaiApiKey": "${OPENAI_API_KEY}",
+          "llmModel": "gpt-4o-mini",
+          "topK": 5,
+          "similarityThreshold": 0.3,
+          "deduplicationThreshold": 0.95
+        }
+      }
+    }
+  }
+}
+```
+
+#### Environment variables
+
+Set your API keys as environment variables so the `${...}` references resolve:
 
 ```bash
 export PINECONE_API_KEY="pcsk_..."
+export OPENAI_API_KEY="sk-..."   # only needed for captureMode: "llm"
 ```
 
-Add this to your `~/.zshrc` or `~/.bashrc` to persist across sessions.
+Add these to your `~/.zshrc` or `~/.bashrc` to persist across sessions.
 
 ### Using namespaces
 
@@ -201,11 +241,16 @@ openclaw pinecone-memory stats
 | `namespace` | `string` | `"default"` | Namespace within the index |
 | `autoRecall` | `boolean` | `true` | Inject relevant memories before each turn |
 | `autoCapture` | `boolean` | `true` | Store facts after each turn |
+| `captureMode` | `string` | `"heuristic"` | `"heuristic"` for regex-based capture, `"llm"` for LLM-driven extraction |
+| `openaiApiKey` | `string` | — | OpenAI API key (supports `${OPENAI_API_KEY}`). Required when `captureMode` is `"llm"` |
+| `llmModel` | `string` | `"gpt-4o-mini"` | OpenAI model for fact extraction and reconciliation |
 | `topK` | `number` | `5` | Max memories per recall |
 | `similarityThreshold` | `number` | `0.3` | Min similarity score (0-1) for search results |
 | `deduplicationThreshold` | `number` | `0.95` | Min similarity to consider a memory a duplicate |
 
 ## How capture works
+
+### Heuristic mode (default)
 
 Not every message is stored. The plugin uses pattern matching to detect text worth keeping:
 
@@ -216,9 +261,16 @@ Not every message is stored. The plugin uses pattern matching to detect text wor
 - **Conventions** — "convention", "pattern", "style guide"
 - **Config references** — "API key", "endpoint", "credentials"
 
-Messages shorter than 20 characters or longer than 2,000 characters are ignored. Duplicates (similarity >= 0.95) are automatically skipped.
+Messages shorter than 20 characters or longer than 2,000 characters are ignored. Duplicates (similarity >= 0.95) are automatically skipped. Each stored memory is auto-categorized as one of: `preference`, `decision`, `project`, `technical`, `fact`, or `general`.
 
-Each stored memory is auto-categorized as one of: `preference`, `decision`, `project`, `technical`, `fact`, or `general`.
+### LLM mode
+
+When `captureMode` is `"llm"`, the plugin uses a 2-step pipeline inspired by [mem0](https://github.com/mem0ai/mem0):
+
+1. **Fact extraction** — The conversation is sent to an LLM (gpt-4o-mini by default) which extracts concise, standalone facts about developer preferences, technical decisions, project details, and workflow conventions.
+2. **Memory reconciliation** — Each extracted fact is compared against existing memories via Pinecone similarity search. A second LLM call decides for each fact whether to ADD (new info), UPDATE (refine existing), DELETE (contradicts existing), or NONE (already captured).
+
+This produces more accurate, concise memories than heuristic mode. LLM calls use `temperature: 0` and structured JSON output for deterministic results. If any LLM call fails, the plugin automatically falls back to heuristic capture — memory capture is non-critical and should never block the agent.
 
 ## Troubleshooting
 

@@ -17,7 +17,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@pinecone-database/pinecone": "^7.1.0"
+    "@pinecone-database/pinecone": "^7.1.0",
+    "openai": "^4.73.0"
   },
   "devDependencies": {
     "vitest": "^3.0.0"

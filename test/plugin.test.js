@@ -30,6 +30,21 @@ vi.mock("node:crypto", () => ({
   randomUUID: vi.fn(() => "test-uuid-1234"),
 }));
 
+// ---------------------------------------------------------------------------
+// Mock OpenAI SDK
+// ---------------------------------------------------------------------------
+const mockChatCreate = vi.fn();
+
+vi.mock("openai", () => ({
+  default: vi.fn().mockImplementation(() => ({
+    chat: {
+      completions: {
+        create: mockChatCreate,
+      },
+    },
+  })),
+}));
+
 const { default: register } = await import("../index.js");
 
 // ---------------------------------------------------------------------------
@@ -114,6 +129,22 @@ describe("plugin – register", () => {
       expect(result.prependContext).toContain("0.85");
       expect(result.prependContext).toContain("[preference]");
       expect(result.prependContext).toContain("User prefers dark mode");
+    });
+
+    it("uses fallback content fields and never renders undefined", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [
+            { _id: "a", _score: 0.85, fields: { content: "Memory from fields" }, category: "fact" },
+            { _id: "b", _score: 0.82, metadata: { content: "Memory from metadata" }, category: "fact" },
+            { _id: "c", _score: 0.8 },
+          ],
+        },
+      });
+      const result = await api.hooks.before_agent_start({ prompt: "recall" });
+      expect(result.prependContext).toContain("Memory from fields");
+      expect(result.prependContext).toContain("Memory from metadata");
+      expect(result.prependContext).not.toContain("undefined");
     });
 
     it("returns undefined when no hits", async () => {
@@ -211,6 +242,36 @@ describe("plugin – register", () => {
         ],
       });
       expect(mockUpsertRecords).toHaveBeenCalled();
+    });
+
+    it("updates an existing nearby memory instead of adding", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [{ _id: "existing-id", _score: 0.88, content: "I prefer dark mode in editors" }],
+        },
+      });
+
+      await api.hooks.agent_end({
+        messages: [{ role: "user", content: "I always prefer dark mode in my editor" }],
+      });
+
+      const record = mockUpsertRecords.mock.calls[0][0].records[0];
+      expect(record._id).toBe("existing-id");
+      expect(mockDeleteOne).not.toHaveBeenCalled();
+    });
+
+    it("deletes contradictory memory", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [{ _id: "existing-id", _score: 0.6, content: "I like dark mode" }],
+        },
+      });
+
+      await api.hooks.agent_end({
+        messages: [{ role: "user", content: "I dislike dark mode now" }],
+      });
+
+      expect(mockDeleteOne).toHaveBeenCalledWith("existing-id");
     });
   });
 
@@ -361,5 +422,179 @@ describe("plugin – disabled hooks", () => {
     register(api);
     expect(api.hooks.before_agent_start).toBeDefined();
     expect(api.hooks.agent_end).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LLM capture mode
+// ---------------------------------------------------------------------------
+describe("plugin – LLM capture mode", () => {
+  let api;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListIndexes.mockResolvedValue({
+      indexes: [{ name: "openclaw-memory" }],
+    });
+  });
+
+  it("uses LLM extraction when captureMode is llm", async () => {
+    // Step 1: extraction returns facts
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify({ facts: ["The user prefers dark mode"] }) } }],
+    });
+    // Step 2: reconciliation returns ADD decision
+    mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            memory: [{ id: "new", text: "The user prefers dark mode", event: "ADD", old_memory: null }],
+          }),
+        },
+      }],
+    });
+
+    api = createMockApi({ captureMode: "llm", openaiApiKey: "sk-test-key" });
+    register(api);
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "I prefer dark mode in all my editors" }],
+    });
+
+    expect(mockChatCreate).toHaveBeenCalledTimes(2);
+    expect(mockUpsertRecords).toHaveBeenCalledWith({
+      records: [
+        expect.objectContaining({
+          content: "The user prefers dark mode",
+          role: "llm-extract",
+        }),
+      ],
+    });
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("llm capture")
+    );
+  });
+
+  it("falls back to heuristic when LLM extraction fails", async () => {
+    mockChatCreate.mockRejectedValueOnce(new Error("API rate limited"));
+    mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
+
+    api = createMockApi({ captureMode: "llm", openaiApiKey: "sk-test-key" });
+    register(api);
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "I always prefer using TypeScript for new projects" }],
+    });
+
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("llm capture failed, falling back to heuristic")
+    );
+    // Heuristic should still store the memory
+    expect(mockUpsertRecords).toHaveBeenCalled();
+  });
+
+  it("falls back to heuristic when openaiApiKey is missing", async () => {
+    mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
+
+    api = createMockApi({ captureMode: "llm" });
+    register(api);
+
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("failed to create OpenAI client")
+    );
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "I always prefer using TypeScript for new projects" }],
+    });
+
+    // Should fall back to heuristic since openaiClient is null
+    expect(mockChatCreate).not.toHaveBeenCalled();
+    expect(mockUpsertRecords).toHaveBeenCalled();
+  });
+
+  it("does not call OpenAI when captureMode is heuristic", async () => {
+    mockSearchRecords.mockResolvedValue({ result: { hits: [] } });
+
+    api = createMockApi({ captureMode: "heuristic" });
+    register(api);
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "I always prefer using TypeScript for new projects" }],
+    });
+
+    expect(mockChatCreate).not.toHaveBeenCalled();
+    expect(mockUpsertRecords).toHaveBeenCalled();
+  });
+
+  it("skips capture when LLM returns no facts", async () => {
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify({ facts: [] }) } }],
+    });
+
+    api = createMockApi({ captureMode: "llm", openaiApiKey: "sk-test-key" });
+    register(api);
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "Hello, how are you?" }],
+    });
+
+    // Extraction returned empty facts, so no reconciliation or storage
+    expect(mockChatCreate).toHaveBeenCalledTimes(1);
+    expect(mockUpsertRecords).not.toHaveBeenCalled();
+  });
+
+  it("LLM capture handles UPDATE and DELETE decisions", async () => {
+    // Extraction
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify({ facts: ["User now prefers Bun", "User dislikes npm"] }) } }],
+    });
+    // Search returns existing memories
+    mockSearchRecords
+      .mockResolvedValueOnce({
+        result: { hits: [{ _id: "mem-1", _score: 0.85, content: "User prefers npm" }] },
+      })
+      .mockResolvedValueOnce({
+        result: { hits: [{ _id: "mem-2", _score: 0.75, content: "User likes npm" }] },
+      });
+    // Reconciliation
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            memory: [
+              { id: "mem-1", text: "User now prefers Bun", event: "UPDATE", old_memory: "User prefers npm" },
+              { id: "mem-2", text: "User dislikes npm", event: "DELETE", old_memory: "User likes npm" },
+            ],
+          }),
+        },
+      }],
+    });
+
+    api = createMockApi({ captureMode: "llm", openaiApiKey: "sk-test-key" });
+    register(api);
+
+    await api.hooks.agent_end({
+      messages: [{ role: "user", content: "I now prefer Bun and I dislike npm" }],
+    });
+
+    // UPDATE: upsert with existing id
+    expect(mockUpsertRecords).toHaveBeenCalledWith({
+      records: [expect.objectContaining({ _id: "mem-1", content: "User now prefers Bun" })],
+    });
+    // DELETE: delete old + store replacement
+    expect(mockDeleteOne).toHaveBeenCalledWith("mem-2");
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("llm capture")
+    );
+  });
+
+  it("includes model in registration log when in LLM mode", () => {
+    api = createMockApi({ captureMode: "llm", openaiApiKey: "sk-test-key", llmModel: "gpt-4o" });
+    register(api);
+
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("model: gpt-4o")
+    );
   });
 });
