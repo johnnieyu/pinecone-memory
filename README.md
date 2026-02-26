@@ -11,7 +11,7 @@ Your agent forgets everything between sessions. This plugin fixes that. It watch
 **Auto-Capture** — After the agent responds, the plugin extracts facts, preferences, and decisions from the last 10 messages and stores them. Two capture modes are available:
 
 - **Heuristic** (default) — Fast regex-based pattern matching. No external API calls required.
-- **LLM** — Uses OpenAI (gpt-4o-mini by default) to extract concise facts and intelligently reconcile them against existing memories with ADD/UPDATE/DELETE/NONE decisions. Produces significantly more accurate, concise memories. Falls back to heuristic on any LLM failure.
+- **LLM** — Uses OpenAI (gpt-5-mini by default) to extract concise facts and intelligently reconcile them against existing memories with ADD/UPDATE/DELETE/NONE decisions. Produces significantly more accurate, concise memories. Falls back to heuristic on any LLM failure.
 
 Both hooks run silently. No prompting, no manual calls.
 
@@ -176,7 +176,7 @@ LLM mode uses OpenAI to extract and reconcile facts. This produces higher-qualit
           "autoCapture": true,
           "captureMode": "llm",
           "openaiApiKey": "${OPENAI_API_KEY}",
-          "llmModel": "gpt-4o-mini",
+          "llmModel": "gpt-5-mini",
           "topK": 5,
           "similarityThreshold": 0.3,
           "deduplicationThreshold": 0.95
@@ -243,7 +243,7 @@ openclaw pinecone-memory stats
 | `autoCapture` | `boolean` | `true` | Store facts after each turn |
 | `captureMode` | `string` | `"heuristic"` | `"heuristic"` for regex-based capture, `"llm"` for LLM-driven extraction |
 | `openaiApiKey` | `string` | — | OpenAI API key (supports `${OPENAI_API_KEY}`). Required when `captureMode` is `"llm"` |
-| `llmModel` | `string` | `"gpt-4o-mini"` | OpenAI model for fact extraction and reconciliation |
+| `llmModel` | `string` | `"gpt-5-mini"` | OpenAI model for fact extraction and reconciliation |
 | `topK` | `number` | `5` | Max memories per recall |
 | `similarityThreshold` | `number` | `0.3` | Min similarity score (0-1) for search results |
 | `deduplicationThreshold` | `number` | `0.95` | Min similarity to consider a memory a duplicate |
@@ -267,10 +267,10 @@ Messages shorter than 20 characters or longer than 2,000 characters are ignored.
 
 When `captureMode` is `"llm"`, the plugin uses a 2-step pipeline inspired by [mem0](https://github.com/mem0ai/mem0):
 
-1. **Fact extraction** — The conversation is sent to an LLM (gpt-4o-mini by default) which extracts concise, standalone facts about developer preferences, technical decisions, project details, and workflow conventions.
+1. **Fact extraction** — The conversation is sent to an LLM (gpt-5-mini by default) which extracts concise, standalone facts about developer preferences, technical decisions, project details, and workflow conventions.
 2. **Memory reconciliation** — Each extracted fact is compared against existing memories via Pinecone similarity search. A second LLM call decides for each fact whether to ADD (new info), UPDATE (refine existing), DELETE (contradicts existing), or NONE (already captured).
 
-This produces more accurate, concise memories than heuristic mode. LLM calls use `temperature: 0` and structured JSON output for deterministic results. If any LLM call fails, the plugin automatically falls back to heuristic capture — memory capture is non-critical and should never block the agent.
+This produces more accurate, concise memories than heuristic mode. LLM calls use structured JSON output for consistent results. If any LLM call fails, the plugin automatically falls back to heuristic capture — memory capture is non-critical and should never block the agent.
 
 ## Troubleshooting
 

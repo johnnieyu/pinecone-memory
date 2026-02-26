@@ -176,7 +176,7 @@ describe("llmExtractFacts", () => {
 
   it("extracts facts from messages via LLM", async () => {
     const openai = mockOpenAI({ facts: ["The user prefers dark mode", "The project uses TypeScript"] });
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", [
       { role: "user", content: "I prefer dark mode. The project uses TypeScript." },
     ]);
     expect(facts).toEqual(["The user prefers dark mode", "The project uses TypeScript"]);
@@ -185,14 +185,14 @@ describe("llmExtractFacts", () => {
 
   it("returns empty array when no user messages", async () => {
     const openai = mockOpenAI({ facts: [] });
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", []);
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", []);
     expect(facts).toEqual([]);
     expect(openai.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it("ignores assistant messages", async () => {
     const openai = mockOpenAI({ facts: [] });
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", [
       { role: "assistant", content: "I recommend using TypeScript for this project" },
     ]);
     expect(facts).toEqual([]);
@@ -207,7 +207,7 @@ describe("llmExtractFacts", () => {
         },
       },
     };
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", [
       { role: "user", content: "I prefer dark mode in editors" },
     ]);
     expect(facts).toEqual([]);
@@ -215,7 +215,7 @@ describe("llmExtractFacts", () => {
 
   it("filters out non-string facts", async () => {
     const openai = mockOpenAI({ facts: ["valid fact", 42, null, "another fact", ""] });
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", [
       { role: "user", content: "Some conversation content here" },
     ]);
     expect(facts).toEqual(["valid fact", "another fact"]);
@@ -223,7 +223,7 @@ describe("llmExtractFacts", () => {
 
   it("handles array content blocks in messages", async () => {
     const openai = mockOpenAI({ facts: ["The user likes bun"] });
-    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+    const facts = await llmExtractFacts(openai, "gpt-5-mini", [
       {
         role: "user",
         content: [{ type: "text", text: "I like using bun" }],
@@ -234,7 +234,7 @@ describe("llmExtractFacts", () => {
 
   it("strips memory tags from message content", async () => {
     const openai = mockOpenAI({ facts: ["The user prefers vim"] });
-    await llmExtractFacts(openai, "gpt-4o-mini", [
+    await llmExtractFacts(openai, "gpt-5-mini", [
       { role: "user", content: "<relevant-memories>old</relevant-memories> I prefer vim" },
     ]);
     const callArgs = openai.chat.completions.create.mock.calls[0][0];
@@ -279,7 +279,7 @@ describe("llmReconcileMemories", () => {
     const openai = mockOpenAI(decisions);
     const db = mockDB([{ _id: "mem-real-uuid-1", _score: 0.8, content: "The project uses npm" }]);
 
-    const result = await llmReconcileMemories(openai, "gpt-4o-mini", ["User prefers dark mode", "Project uses Bun"], db);
+    const result = await llmReconcileMemories(openai, "gpt-5-mini", ["User prefers dark mode", "Project uses Bun"], db);
 
     expect(db.search).toHaveBeenCalledTimes(2);
     expect(openai.chat.completions.create).toHaveBeenCalledOnce();
@@ -306,7 +306,7 @@ describe("llmReconcileMemories", () => {
       },
     };
     const db = mockDB();
-    const result = await llmReconcileMemories(openai, "gpt-4o-mini", ["a fact"], db);
+    const result = await llmReconcileMemories(openai, "gpt-5-mini", ["a fact"], db);
     expect(result).toEqual([]);
   });
 
@@ -317,7 +317,7 @@ describe("llmReconcileMemories", () => {
     const openai = mockOpenAI(decisions);
     const db = mockDB([]);
 
-    const result = await llmReconcileMemories(openai, "gpt-4o-mini", ["Brand new fact"], db);
+    const result = await llmReconcileMemories(openai, "gpt-5-mini", ["Brand new fact"], db);
     expect(result).toHaveLength(1);
 
     const callArgs = openai.chat.completions.create.mock.calls[0][0];

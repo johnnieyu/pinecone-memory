@@ -252,7 +252,6 @@ async function llmExtractFacts(openai, model, messages) {
 
   const response = await openai.chat.completions.create({
     model,
-    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: buildFactExtractionPrompt() },
@@ -303,7 +302,6 @@ async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshol
 
   const response = await openai.chat.completions.create({
     model,
-    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: MEMORY_UPDATE_PROMPT },
@@ -495,7 +493,7 @@ export default function register(api) {
   const summaryTopK = config.summaryTopK ?? 3;
   const minFactLength = config.minFactLength ?? 15;
   const maxFactLength = config.maxFactLength ?? 280;
-  const llmModel = config.llmModel ?? "gpt-4o-mini";
+  const llmModel = config.llmModel ?? "gpt-5-mini";
 
   let openaiClient = null;
   if (captureMode === "llm") {
