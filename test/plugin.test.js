@@ -116,6 +116,22 @@ describe("plugin – register", () => {
       expect(result.prependContext).toContain("User prefers dark mode");
     });
 
+    it("uses fallback content fields and never renders undefined", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [
+            { _id: "a", _score: 0.85, fields: { content: "Memory from fields" }, category: "fact" },
+            { _id: "b", _score: 0.82, metadata: { content: "Memory from metadata" }, category: "fact" },
+            { _id: "c", _score: 0.8 },
+          ],
+        },
+      });
+      const result = await api.hooks.before_agent_start({ prompt: "recall" });
+      expect(result.prependContext).toContain("Memory from fields");
+      expect(result.prependContext).toContain("Memory from metadata");
+      expect(result.prependContext).not.toContain("undefined");
+    });
+
     it("returns undefined when no hits", async () => {
       mockSearchRecords.mockResolvedValueOnce({
         result: { hits: [] },
@@ -211,6 +227,36 @@ describe("plugin – register", () => {
         ],
       });
       expect(mockUpsertRecords).toHaveBeenCalled();
+    });
+
+    it("updates an existing nearby memory instead of adding", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [{ _id: "existing-id", _score: 0.88, content: "I prefer dark mode in editors" }],
+        },
+      });
+
+      await api.hooks.agent_end({
+        messages: [{ role: "user", content: "I always prefer dark mode in my editor" }],
+      });
+
+      const record = mockUpsertRecords.mock.calls[0][0].records[0];
+      expect(record._id).toBe("existing-id");
+      expect(mockDeleteOne).not.toHaveBeenCalled();
+    });
+
+    it("deletes contradictory memory", async () => {
+      mockSearchRecords.mockResolvedValueOnce({
+        result: {
+          hits: [{ _id: "existing-id", _score: 0.6, content: "I like dark mode" }],
+        },
+      });
+
+      await api.hooks.agent_end({
+        messages: [{ role: "user", content: "I dislike dark mode now" }],
+      });
+
+      expect(mockDeleteOne).toHaveBeenCalledWith("existing-id");
     });
   });
 

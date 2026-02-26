@@ -4,6 +4,10 @@ import {
   shouldCapture,
   detectCategory,
   stripMemoryTags,
+  extractHitContent,
+  extractConciseFacts,
+  similarity,
+  isContradiction,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -112,5 +116,41 @@ describe("stripMemoryTags", () => {
   it("removes multiple tag blocks", () => {
     const input = "<relevant-memories>a</relevant-memories> mid <relevant-memories>b</relevant-memories>";
     expect(stripMemoryTags(input)).toBe("mid");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractHitContent
+// ---------------------------------------------------------------------------
+describe("extractHitContent", () => {
+  it("supports top-level content", () => {
+    expect(extractHitContent({ content: "hello" })).toBe("hello");
+  });
+
+  it("supports fields.content and metadata.content", () => {
+    expect(extractHitContent({ fields: { content: "field content" } })).toBe("field content");
+    expect(extractHitContent({ metadata: { content: "meta content" } })).toBe("meta content");
+  });
+
+  it("returns empty string when missing", () => {
+    expect(extractHitContent({ _id: "x" })).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summary helpers
+// ---------------------------------------------------------------------------
+describe("summary helpers", () => {
+  it("extracts concise facts from messages", () => {
+    const facts = extractConciseFacts([
+      { role: "user", content: "I always prefer dark mode. I decided to use bun instead of npm." },
+    ]);
+    expect(facts.length).toBeGreaterThan(0);
+    expect(facts.join(" ")).toContain("prefer dark mode");
+  });
+
+  it("calculates similarity and contradiction", () => {
+    expect(similarity("I like dark mode", "I like dark mode")).toBeGreaterThan(0.9);
+    expect(isContradiction("I dislike dark mode", "I like dark mode")).toBe(true);
   });
 });
