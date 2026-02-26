@@ -1,0 +1,77 @@
+{
+  "name": "openclaw-memory-pinecone",
+  "displayName": "Pinecone Memory",
+  "description": "Long-term memory for OpenClaw using Pinecone with integrated inference embeddings",
+  "version": "1.0.0",
+  "config": {
+    "pineconeApiKey": {
+      "type": "string",
+      "required": true,
+      "description": "Pinecone API key. Supports ${PINECONE_API_KEY} env var syntax.",
+      "sensitive": true
+    },
+    "indexName": {
+      "type": "string",
+      "required": false,
+      "default": "openclaw-memory",
+      "description": "Pinecone index name. Auto-created with integrated inference if missing."
+    },
+    "namespace": {
+      "type": "string",
+      "required": false,
+      "default": "default",
+      "description": "Namespace to scope memories per project or user."
+    },
+    "embeddingModel": {
+      "type": "string",
+      "required": false,
+      "default": "multilingual-e5-large",
+      "description": "Embedding model for integrated inference.",
+      "advanced": true
+    },
+    "cloud": {
+      "type": "string",
+      "required": false,
+      "default": "aws",
+      "description": "Cloud provider for index creation.",
+      "advanced": true
+    },
+    "region": {
+      "type": "string",
+      "required": false,
+      "default": "us-east-1",
+      "description": "Region for index creation.",
+      "advanced": true
+    },
+    "autoCapture": {
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "Automatically store memories after each conversation turn."
+    },
+    "autoRecall": {
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "Automatically inject relevant memories before each turn."
+    },
+    "topK": {
+      "type": "number",
+      "required": false,
+      "default": 5,
+      "description": "Maximum number of memories to recall per search."
+    },
+    "similarityThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.3,
+      "description": "Minimum similarity score for search results (0-1)."
+    },
+    "deduplicationThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.95,
+      "description": "Score above which a memory is considered a duplicate (0-1)."
+    }
+  }
+}
