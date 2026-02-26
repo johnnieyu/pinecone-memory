@@ -544,12 +544,12 @@ describe("plugin – LLM capture mode", () => {
     expect(mockUpsertRecords).not.toHaveBeenCalled();
   });
 
-  it("LLM capture handles UPDATE and DELETE decisions", async () => {
+  it("LLM capture handles UPDATE and DELETE decisions with integer ID mapping", async () => {
     // Extraction
     mockChatCreate.mockResolvedValueOnce({
       choices: [{ message: { content: JSON.stringify({ facts: ["User now prefers Bun", "User dislikes npm"] }) } }],
     });
-    // Search returns existing memories
+    // Search returns existing memories (with real UUIDs)
     mockSearchRecords
       .mockResolvedValueOnce({
         result: { hits: [{ _id: "mem-1", _score: 0.85, content: "User prefers npm" }] },
@@ -557,14 +557,14 @@ describe("plugin – LLM capture mode", () => {
       .mockResolvedValueOnce({
         result: { hits: [{ _id: "mem-2", _score: 0.75, content: "User likes npm" }] },
       });
-    // Reconciliation
+    // Reconciliation — LLM responds with integer IDs (0, 1) not real UUIDs
     mockChatCreate.mockResolvedValueOnce({
       choices: [{
         message: {
           content: JSON.stringify({
             memory: [
-              { id: "mem-1", text: "User now prefers Bun", event: "UPDATE", old_memory: "User prefers npm" },
-              { id: "mem-2", text: "User dislikes npm", event: "DELETE", old_memory: "User likes npm" },
+              { id: "0", text: "User now prefers Bun", event: "UPDATE", old_memory: "User prefers npm" },
+              { id: "1", text: "User dislikes npm", event: "DELETE", old_memory: "User likes npm" },
             ],
           }),
         },

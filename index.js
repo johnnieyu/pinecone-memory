@@ -127,41 +127,103 @@ function extractConciseFacts(messages, { minFactLength = 15, maxFactLength = 280
 // LLM prompts & functions
 // ---------------------------------------------------------------------------
 
-const FACT_EXTRACTION_PROMPT = `You are a Developer Knowledge Organizer. Your task is to extract concise, standalone facts from the provided conversation.
+function buildFactExtractionPrompt() {
+  const today = new Date().toISOString().slice(0, 10);
+  return `You are a Personal Knowledge Organizer for a developer. Your task is to extract **only durable, personally relevant facts** from the user's messages in a conversation.
 
-Focus on extracting:
-1. Developer preferences (tools, languages, frameworks, coding style)
-2. Technical decisions (architecture choices, library selections, trade-offs)
-3. Project details (stack, structure, deployment, environments)
-4. Workflow conventions (branching strategy, CI/CD, review process)
-5. Important context (deadlines, constraints, team structure)
-6. Personal details (name, role, location, timezone)
+IMPORTANT: Extract facts ONLY from the user's messages. Ignore assistant messages entirely.
+
+Only extract facts that fall into these categories:
+1. Personal preferences (tools, languages, frameworks, coding style, editor settings)
+2. Durable technical decisions (architecture choices, library selections, conventions adopted)
+3. Project details (stack, repo structure, deployment targets, environments)
+4. Workflow rules (branching strategy, CI/CD setup, review process, team norms)
+5. Identity and role (name, job title, team, company, timezone)
+
+Do NOT extract:
+- Greetings, small talk, or transient conversation
+- One-off questions or requests ("Can you help me with X?")
+- Generic statements or common knowledge ("React is a JavaScript library")
+- Task-specific implementation details or code snippets
+- Anything the assistant said — only extract from user messages
+
+Examples:
+
+Input: "Hi, how are you?"
+Output: {"facts": []}
+
+Input: "Can you fix the bug in the login page?"
+Output: {"facts": []}
+
+Input: "TypeScript is a superset of JavaScript."
+Output: {"facts": []}
+
+Input: "I always use Prettier with 2-space tabs. Our team uses conventional commits."
+Output: {"facts": ["Uses Prettier with 2-space tabs", "Team uses conventional commits"]}
+
+Input: "We decided to go with PostgreSQL instead of MySQL. The API is deployed on Fly.io."
+Output: {"facts": ["Chose PostgreSQL over MySQL", "API is deployed on Fly.io"]}
+
+Input: "My name is Sarah. I'm a senior engineer at Acme Corp working on the payments team."
+Output: {"facts": ["Name is Sarah", "Senior engineer at Acme Corp", "Works on the payments team"]}
+
+Input: "Can you refactor this function to use async/await?"
+Output: {"facts": []}
 
 Rules:
-- Each fact must be a single, self-contained sentence
-- Use third person ("The user prefers..." not "I prefer...")
-- Be concise — under 100 characters per fact when possible
-- Do not extract trivial, obvious, or overly generic statements
-- Do not extract code snippets or implementation details
-- If no meaningful facts can be extracted, return an empty array
+- Today's date is ${today}.
+- Each fact should be a short, standalone phrase (not a full sentence)
+- Be concise — under 80 characters per fact
+- Detect the language of the user's input and record the facts in the same language
+- Do not return anything from the example prompts above
+- If nothing is worth remembering long-term, return an empty array
+- When in doubt, leave it out — fewer high-quality facts beat many noisy ones
 
-Return a JSON object: { "facts": ["fact1", "fact2", ...] }`;
+Return a JSON object: {"facts": ["fact1", "fact2", ...]}`;
+}
 
-const MEMORY_UPDATE_PROMPT = `You are a memory manager. You will be given a list of new facts and, for each fact, a set of existing memories that are semantically similar.
+const MEMORY_UPDATE_PROMPT = `You are a smart memory manager which controls the memory of a system.
+You can perform four operations: (1) ADD into the memory, (2) UPDATE the memory, (3) DELETE from the memory, and (4) NONE (no change).
 
-For each new fact, decide ONE action:
-- ADD: The fact is genuinely new information not covered by any existing memory.
-- UPDATE: The fact refines, corrects, or adds detail to an existing memory. Provide the updated text and the ID of the memory to update.
-- DELETE: The fact directly contradicts an existing memory (the old memory is now wrong). Provide the ID to delete. The new fact will be stored as a replacement.
-- NONE: The fact is already captured by an existing memory — no action needed.
+Compare newly retrieved facts with the existing memory. For each new fact, decide one action.
 
-Rules:
-- Prefer UPDATE over ADD when an existing memory covers the same topic
-- Prefer DELETE over UPDATE when the new fact contradicts the old memory
-- Only use NONE when the existing memory already says essentially the same thing
-- When updating, merge information — don't lose details from the old memory unless contradicted
+There are specific guidelines to select which operation to perform:
 
-Return a JSON object: { "memory": [{ "id": "<existing_memory_id or 'new'>", "text": "<fact text>", "event": "ADD|UPDATE|DELETE|NONE", "old_memory": "<text of old memory if UPDATE or DELETE, else null>" }] }`;
+1. **ADD**: The fact contains new information not present in any existing memory. Use a new ID (the string "new").
+   - Example:
+     - Existing memories: [{"id": "0", "text": "Uses TypeScript"}]
+     - New fact: "Name is Sarah"
+     - Result: {"id": "new", "text": "Name is Sarah", "event": "ADD", "old_memory": null}
+
+2. **UPDATE**: The fact refines, adds detail to, or is a more informative version of an existing memory. Keep the SAME ID from the existing memory. Merge information — don't lose details from the old memory unless contradicted.
+   - Example (update — new fact adds detail):
+     - Existing memories: [{"id": "0", "text": "Uses Vim"}]
+     - New fact: "Uses Neovim with LazyVim config"
+     - Result: {"id": "0", "text": "Uses Neovim with LazyVim config", "event": "UPDATE", "old_memory": "Uses Vim"}
+   - Example (no update — same meaning):
+     - Existing memories: [{"id": "0", "text": "Prefers dark mode"}]
+     - New fact: "Likes dark mode"
+     - Result: {"id": "0", "text": "Prefers dark mode", "event": "NONE", "old_memory": null}
+
+3. **DELETE**: The fact directly contradicts an existing memory. Use the ID of the memory to delete.
+   - Example:
+     - Existing memories: [{"id": "0", "text": "Prefers MySQL"}]
+     - New fact: "Switched to PostgreSQL, no longer uses MySQL"
+     - Result: {"id": "0", "text": "Switched to PostgreSQL, no longer uses MySQL", "event": "DELETE", "old_memory": "Prefers MySQL"}
+
+4. **NONE**: The fact is already captured by an existing memory and adds no new information.
+   - Example:
+     - Existing memories: [{"id": "0", "text": "Senior engineer at Acme Corp"}]
+     - New fact: "Works at Acme Corp"
+     - Result: {"id": "0", "text": "Senior engineer at Acme Corp", "event": "NONE", "old_memory": null}
+
+IMPORTANT:
+- For UPDATE, DELETE, and NONE, you MUST use an ID from the existing memories provided. Do NOT generate new IDs for these operations.
+- Only use "new" as the ID for ADD operations.
+- If two facts relate to the same existing memory, handle them independently.
+- When in doubt between UPDATE and NONE, prefer NONE — avoid unnecessary writes.
+
+Return a JSON object: {"memory": [{"id": "<id>", "text": "<fact text>", "event": "ADD|UPDATE|DELETE|NONE", "old_memory": "<text of old memory if UPDATE or DELETE, else null>"}]}`;
 
 function createOpenAIClient(config) {
   const apiKey = resolveEnvVars(config.openaiApiKey);
@@ -173,7 +235,7 @@ function createOpenAIClient(config) {
 
 async function llmExtractFacts(openai, model, messages) {
   const conversationText = messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
+    .filter((m) => m.role === "user")
     .map((m) => {
       const text =
         typeof m.content === "string"
@@ -181,19 +243,18 @@ async function llmExtractFacts(openai, model, messages) {
           : Array.isArray(m.content)
             ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
             : "";
-      return `${m.role}: ${stripMemoryTags(text)}`;
+      return stripMemoryTags(text);
     })
-    .filter((line) => line.length > 6)
+    .filter((line) => line.trim().length > 0)
     .join("\n");
 
   if (!conversationText.trim()) return [];
 
   const response = await openai.chat.completions.create({
     model,
-    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: FACT_EXTRACTION_PROMPT },
+      { role: "system", content: buildFactExtractionPrompt() },
       { role: "user", content: conversationText },
     ],
   });
@@ -207,14 +268,25 @@ async function llmExtractFacts(openai, model, messages) {
 
 async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshold = 0.3) {
   const factsWithContext = [];
+  // Map integer IDs → real UUIDs to prevent LLM hallucination
+  const idMapping = {};
+  let nextId = 0;
 
   for (const fact of facts) {
     const nearby = await db.search(fact, topK, threshold);
-    const existingMemories = nearby.map((hit) => ({
-      id: hit._id,
-      text: extractHitContent(hit),
-      score: hit._score,
-    }));
+    const existingMemories = nearby.map((hit) => {
+      const realId = hit._id;
+      // Reuse integer ID if we've already seen this UUID
+      let intId = Object.entries(idMapping).find(([, v]) => v === realId)?.[0];
+      if (intId == null) {
+        intId = String(nextId++);
+        idMapping[intId] = realId;
+      }
+      return {
+        id: intId,
+        text: extractHitContent(hit),
+      };
+    });
     factsWithContext.push({ fact, existingMemories });
   }
 
@@ -222,7 +294,7 @@ async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshol
     .map((fc, i) => {
       const memLines =
         fc.existingMemories.length > 0
-          ? fc.existingMemories.map((m) => `  - [${m.id}] (score: ${m.score.toFixed(2)}): ${m.text}`).join("\n")
+          ? fc.existingMemories.map((m) => `  - [id=${m.id}]: ${m.text}`).join("\n")
           : "  (no existing memories found)";
       return `Fact ${i + 1}: ${fc.fact}\nExisting memories:\n${memLines}`;
     })
@@ -230,7 +302,6 @@ async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshol
 
   const response = await openai.chat.completions.create({
     model,
-    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: MEMORY_UPDATE_PROMPT },
@@ -242,7 +313,13 @@ async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshol
   if (!raw) return [];
 
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed.memory) ? parsed.memory : [];
+  const decisions = Array.isArray(parsed.memory) ? parsed.memory : [];
+
+  // Map integer IDs back to real UUIDs
+  return decisions.map((d) => ({
+    ...d,
+    id: d.id === "new" ? "new" : (idMapping[String(d.id)] ?? d.id),
+  }));
 }
 
 async function applyMemoryDecisions(decisions, db, logger) {
@@ -390,7 +467,7 @@ export {
   similarity,
   isContradiction,
   PineconeMemoryDB,
-  FACT_EXTRACTION_PROMPT,
+  buildFactExtractionPrompt,
   MEMORY_UPDATE_PROMPT,
   createOpenAIClient,
   llmExtractFacts,
@@ -416,7 +493,7 @@ export default function register(api) {
   const summaryTopK = config.summaryTopK ?? 3;
   const minFactLength = config.minFactLength ?? 15;
   const maxFactLength = config.maxFactLength ?? 280;
-  const llmModel = config.llmModel ?? "gpt-4o-mini";
+  const llmModel = config.llmModel ?? "gpt-5-mini";
 
   let openaiClient = null;
   if (captureMode === "llm") {

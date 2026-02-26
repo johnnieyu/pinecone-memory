@@ -65,7 +65,7 @@
       },
       "llmModel": {
         "type": "string",
-        "default": "gpt-4o-mini",
+        "default": "gpt-5-mini",
         "description": "OpenAI model to use for fact extraction and reconciliation"
       }
     },
@@ -126,7 +126,7 @@
     },
     "llmModel": {
       "label": "LLM Model",
-      "placeholder": "gpt-4o-mini",
+      "placeholder": "gpt-5-mini",
       "help": "OpenAI model used for fact extraction and memory reconciliation",
       "advanced": true
     }
