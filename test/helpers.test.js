@@ -183,9 +183,18 @@ describe("llmExtractFacts", () => {
     expect(openai.chat.completions.create).toHaveBeenCalledOnce();
   });
 
-  it("returns empty array when no messages have content", async () => {
+  it("returns empty array when no user messages", async () => {
     const openai = mockOpenAI({ facts: [] });
     const facts = await llmExtractFacts(openai, "gpt-4o-mini", []);
+    expect(facts).toEqual([]);
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it("ignores assistant messages", async () => {
+    const openai = mockOpenAI({ facts: [] });
+    const facts = await llmExtractFacts(openai, "gpt-4o-mini", [
+      { role: "assistant", content: "I recommend using TypeScript for this project" },
+    ]);
     expect(facts).toEqual([]);
     expect(openai.chat.completions.create).not.toHaveBeenCalled();
   });
@@ -232,6 +241,8 @@ describe("llmExtractFacts", () => {
     const userContent = callArgs.messages[1].content;
     expect(userContent).not.toContain("<relevant-memories>");
     expect(userContent).toContain("prefer vim");
+    // Should not include role prefix since we only send user text
+    expect(userContent).not.toContain("user:");
   });
 });
 
@@ -257,22 +268,32 @@ describe("llmReconcileMemories", () => {
     };
   }
 
-  it("searches for each fact and sends batched prompt to LLM", async () => {
+  it("maps integer IDs to real UUIDs and back", async () => {
+    // LLM receives integer IDs and responds with them
     const decisions = {
       memory: [
         { id: "new", text: "The user prefers dark mode", event: "ADD", old_memory: null },
-        { id: "mem-1", text: "The project uses Bun", event: "UPDATE", old_memory: "The project uses npm" },
+        { id: "0", text: "The project uses Bun", event: "UPDATE", old_memory: "The project uses npm" },
       ],
     };
     const openai = mockOpenAI(decisions);
-    const db = mockDB([{ _id: "mem-1", _score: 0.8, content: "The project uses npm" }]);
+    const db = mockDB([{ _id: "mem-real-uuid-1", _score: 0.8, content: "The project uses npm" }]);
 
     const result = await llmReconcileMemories(openai, "gpt-4o-mini", ["User prefers dark mode", "Project uses Bun"], db);
 
     expect(db.search).toHaveBeenCalledTimes(2);
     expect(openai.chat.completions.create).toHaveBeenCalledOnce();
+
+    // Verify LLM received integer IDs, not UUIDs
+    const callArgs = openai.chat.completions.create.mock.calls[0][0];
+    expect(callArgs.messages[1].content).toContain("id=0");
+    expect(callArgs.messages[1].content).not.toContain("mem-real-uuid-1");
+
+    // Verify output maps back to real UUIDs
     expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("new");
     expect(result[0].event).toBe("ADD");
+    expect(result[1].id).toBe("mem-real-uuid-1");
     expect(result[1].event).toBe("UPDATE");
   });
 
