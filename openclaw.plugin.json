@@ -1,77 +1,103 @@
 {
-  "name": "openclaw-memory-pinecone",
-  "displayName": "Pinecone Memory",
-  "description": "Long-term memory for OpenClaw using Pinecone with integrated inference embeddings",
+  "id": "openclaw-memory-pinecone",
+  "kind": "memory",
+  "name": "Memory (Pinecone)",
   "version": "1.0.0",
-  "config": {
+  "description": "Long-term memory backed by Pinecone with integrated inference",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pineconeApiKey": {
+        "type": "string",
+        "description": "Pinecone API key (supports ${PINECONE_API_KEY} syntax)"
+      },
+      "indexName": {
+        "type": "string",
+        "default": "openclaw-memory",
+        "description": "Name of the Pinecone index (must already exist)"
+      },
+      "namespace": {
+        "type": "string",
+        "default": "default",
+        "description": "Namespace within the index for memory isolation"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically capture facts, preferences, and decisions from conversations"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically inject relevant memories before each turn"
+      },
+      "topK": {
+        "type": "number",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum number of memories to recall per turn"
+      },
+      "similarityThreshold": {
+        "type": "number",
+        "default": 0.3,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Minimum similarity score for search results (0-1)"
+      },
+      "deduplicationThreshold": {
+        "type": "number",
+        "default": 0.95,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Minimum similarity to consider a memory a duplicate (0-1)"
+      }
+    },
+    "required": ["pineconeApiKey"]
+  },
+  "uiHints": {
     "pineconeApiKey": {
-      "type": "string",
-      "required": true,
-      "description": "Pinecone API key. Supports ${PINECONE_API_KEY} env var syntax.",
-      "sensitive": true
+      "label": "Pinecone API Key",
+      "sensitive": true,
+      "placeholder": "pcsk_...",
+      "help": "API key from app.pinecone.io (or use ${PINECONE_API_KEY})"
     },
     "indexName": {
-      "type": "string",
-      "required": false,
-      "default": "openclaw-memory",
-      "description": "Pinecone index name. Auto-created with integrated inference if missing."
+      "label": "Index Name",
+      "placeholder": "openclaw-memory",
+      "help": "Must be a pre-existing Pinecone serverless index with integrated inference"
     },
     "namespace": {
-      "type": "string",
-      "required": false,
-      "default": "default",
-      "description": "Namespace to scope memories per project or user."
-    },
-    "embeddingModel": {
-      "type": "string",
-      "required": false,
-      "default": "multilingual-e5-large",
-      "description": "Embedding model for integrated inference.",
-      "advanced": true
-    },
-    "cloud": {
-      "type": "string",
-      "required": false,
-      "default": "aws",
-      "description": "Cloud provider for index creation.",
-      "advanced": true
-    },
-    "region": {
-      "type": "string",
-      "required": false,
-      "default": "us-east-1",
-      "description": "Region for index creation.",
-      "advanced": true
+      "label": "Namespace",
+      "placeholder": "default",
+      "help": "Use different namespaces to isolate memories per user, project, or machine"
     },
     "autoCapture": {
-      "type": "boolean",
-      "required": false,
-      "default": true,
-      "description": "Automatically store memories after each conversation turn."
+      "label": "Auto-Capture",
+      "help": "Automatically store facts, preferences, and decisions after each agent turn"
     },
     "autoRecall": {
-      "type": "boolean",
-      "required": false,
-      "default": true,
-      "description": "Automatically inject relevant memories before each turn."
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories before each agent turn"
     },
     "topK": {
-      "type": "number",
-      "required": false,
-      "default": 5,
-      "description": "Maximum number of memories to recall per search."
+      "label": "Top K Results",
+      "placeholder": "5",
+      "help": "Maximum number of memories to retrieve per recall",
+      "advanced": true
     },
     "similarityThreshold": {
-      "type": "number",
-      "required": false,
-      "default": 0.3,
-      "description": "Minimum similarity score for search results (0-1)."
+      "label": "Search Threshold",
+      "placeholder": "0.3",
+      "help": "Minimum similarity score for search results (0-1)",
+      "advanced": true
     },
     "deduplicationThreshold": {
-      "type": "number",
-      "required": false,
-      "default": 0.95,
-      "description": "Score above which a memory is considered a duplicate (0-1)."
+      "label": "Dedup Threshold",
+      "placeholder": "0.95",
+      "help": "Memories above this similarity score are considered duplicates and skipped",
+      "advanced": true
     }
   }
 }

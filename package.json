@@ -3,16 +3,26 @@
   "version": "1.0.0",
   "description": "OpenClaw memory plugin backed by Pinecone with integrated inference",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "test": "vitest run"
   },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "pinecone",
+    "semantic-search",
+    "long-term-memory"
+  ],
+  "license": "MIT",
   "dependencies": {
     "@pinecone-database/pinecone": "^7.1.0"
   },
   "devDependencies": {
     "vitest": "^3.0.0"
   },
-  "openclaw.extensions": [
-    "./index.js"
-  ]
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

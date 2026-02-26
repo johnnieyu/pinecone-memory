@@ -39,14 +39,22 @@ npm install
 Get an API key from [app.pinecone.io](https://app.pinecone.io), then add to your `openclaw.json`:
 
 ```json5
-// plugins.entries
-"openclaw-memory-pinecone": {
-  "enabled": true,
-  "config": {
-    "pineconeApiKey": "${PINECONE_API_KEY}"
+{
+  "plugins": {
+    "installs": {
+      "openclaw-memory-pinecone": {
+        "source": "./plugins/memory-pinecone",  // or the path where you cloned the repo
+        "enabled": true,
+        "config": {
+          "pineconeApiKey": "${PINECONE_API_KEY}"
+        }
+      }
+    }
   }
 }
 ```
+
+If you installed via ClawHub, omit the `source` field — it's set automatically.
 
 You must create the Pinecone index before using the plugin. The plugin will throw a clear error if the index doesn't exist.
 
