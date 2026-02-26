@@ -122,6 +122,9 @@ export { resolveEnvVars, shouldCapture, detectCategory, stripMemoryTags, Pinecon
 // ---------------------------------------------------------------------------
 
 export default function activate(context) {
+  console.log("[pinecone-memory] activate() called");
+  console.log("[pinecone-memory] context keys:", Object.keys(context));
+  console.log("[pinecone-memory] context.config:", JSON.stringify(context.config, null, 2));
   const config = context.config ?? {};
   const db = new PineconeMemoryDB(config);
 

@@ -14,39 +14,67 @@ Both run silently. No prompting, no manual calls.
 
 ## Setup
 
-### Install via ClawHub (recommended)
+There are three steps: create the Pinecone index, install the plugin, and configure `openclaw.json`.
+
+### Step 1: Create your Pinecone index
+
+The plugin does **not** auto-create indexes. You must create one manually before enabling the plugin.
+
+1. Go to [app.pinecone.io](https://app.pinecone.io) and create a new **serverless** index.
+2. Choose a cloud/region (e.g. `aws` / `us-east-1`).
+3. Under **Embedding**, select **Integrated (Inference)** and pick a model (e.g. `llama-text-embed-v2`).
+4. Set the **source field** to `content`. This is the field the plugin writes memory text into.
+5. Note the index name you chose (e.g. `openclaw-woodhouse`).
+
+Your index record shape will look like this:
+
+```json
+{
+  "_id": "doc1",
+  "content": "the quick brown fox jumped over the lazy dog"
+}
+```
+
+The plugin writes records in this exact shape — `_id` + `content` + metadata fields (`category`, `role`, `capturedAt`).
+
+### Step 2: Install the plugin
+
+#### Via ClawHub (recommended)
 
 ```bash
 openclaw plugins install openclaw-memory-pinecone
 ```
 
-### Manual install
+#### Manual install
 
 ```bash
-cd ~/.openclaw/plugins
-git clone https://github.com/your-user/openclaw-memory-pinecone.git memory-pinecone
-cd memory-pinecone
+git clone https://github.com/your-user/openclaw-memory-pinecone.git /path/to/pinecone-memory
+cd /path/to/pinecone-memory
 npm install
 ```
 
-### Requirements
+#### Requirements
 
 - Node.js >= 18
 - A [Pinecone](https://www.pinecone.io/) API key (free tier works)
 
-### Configure
+### Step 3: Configure `openclaw.json`
 
-Get an API key from [app.pinecone.io](https://app.pinecone.io), then add to your `openclaw.json`:
+Your `~/.openclaw/openclaw.json` needs two sections for the plugin: an install record under `plugins.installs` and an entry under `plugins.entries`.
+
+#### If installed via ClawHub
+
+ClawHub writes the `plugins.installs` record automatically. You only need to configure `plugins.entries`:
 
 ```json5
 {
   "plugins": {
-    "installs": {
+    "entries": {
       "openclaw-memory-pinecone": {
-        "source": "./plugins/memory-pinecone",  // or the path where you cloned the repo
         "enabled": true,
         "config": {
-          "pineconeApiKey": "${PINECONE_API_KEY}"
+          "pineconeApiKey": "${PINECONE_API_KEY}",
+          "indexName": "openclaw-woodhouse"
         }
       }
     }
@@ -54,31 +82,90 @@ Get an API key from [app.pinecone.io](https://app.pinecone.io), then add to your
 }
 ```
 
-If you installed via ClawHub, omit the `source` field — it's set automatically.
+#### If installed manually
 
-You must create the Pinecone index before using the plugin. The plugin will throw a clear error if the index doesn't exist.
+You need both `plugins.installs` (so OpenClaw knows where the plugin lives) and `plugins.entries` (to enable and configure it).
 
-### Create your Pinecone index
-
-1. Go to [app.pinecone.io](https://app.pinecone.io) and create a new **serverless** index.
-2. Under **Embedding**, choose **Integrated (Inference)** and select a model (e.g. `multilingual-e5-large`).
-3. Set the field map so the `text` source field maps to `content`.
-4. Note the index name and set it in your config (defaults to `"openclaw-memory"`):
+The `source` field must be one of: `"npm"`, `"archive"`, or `"path"`. For a local clone, use `"path"`:
 
 ```json5
-"config": {
-  "pineconeApiKey": "${PINECONE_API_KEY}",
-  "indexName": "my-custom-index"
+{
+  "plugins": {
+    "installs": {
+      "openclaw-memory-pinecone": {
+        "source": "path",
+        "sourcePath": "/path/to/pinecone-memory",
+        "installPath": "/Users/you/.openclaw/extensions/openclaw-memory-pinecone",
+        "version": "1.0.0",
+        "resolvedName": "openclaw-memory-pinecone"
+      }
+    },
+    "entries": {
+      "openclaw-memory-pinecone": {
+        "enabled": true,
+        "config": {
+          "pineconeApiKey": "${PINECONE_API_KEY}",
+          "indexName": "openclaw-woodhouse"
+        }
+      }
+    }
+  }
 }
 ```
 
-#### Using namespaces
+#### Full config example
+
+Here's a complete `plugins` block with all available options:
+
+```json5
+{
+  "plugins": {
+    "installs": {
+      "openclaw-memory-pinecone": {
+        "source": "path",
+        "sourcePath": "/Users/you/repos/pinecone-memory",
+        "installPath": "/Users/you/.openclaw/extensions/openclaw-memory-pinecone",
+        "version": "1.0.0",
+        "resolvedName": "openclaw-memory-pinecone"
+      }
+    },
+    "entries": {
+      "openclaw-memory-pinecone": {
+        "enabled": true,
+        "config": {
+          "pineconeApiKey": "${PINECONE_API_KEY}",
+          "indexName": "openclaw-woodhouse",
+          "namespace": "default",
+          "autoRecall": true,
+          "autoCapture": true,
+          "topK": 5,
+          "similarityThreshold": 0.3,
+          "deduplicationThreshold": 0.95
+        }
+      }
+    }
+  }
+}
+```
+
+#### Environment variable
+
+Set your Pinecone API key as an environment variable so the `${PINECONE_API_KEY}` reference resolves:
+
+```bash
+export PINECONE_API_KEY="pcsk_..."
+```
+
+Add this to your `~/.zshrc` or `~/.bashrc` to persist across sessions.
+
+### Using namespaces
 
 All memories are stored in a single namespace (`"default"`). To isolate memories per user, project, or machine, set the `namespace` option:
 
 ```json5
 "config": {
   "pineconeApiKey": "${PINECONE_API_KEY}",
+  "indexName": "openclaw-woodhouse",
   "namespace": "work-laptop"
 }
 ```
@@ -115,7 +202,7 @@ openclaw pinecone-memory stats
 | `autoRecall` | `boolean` | `true` | Inject relevant memories before each turn |
 | `autoCapture` | `boolean` | `true` | Store facts after each turn |
 | `topK` | `number` | `5` | Max memories per recall |
-| `similarityThreshold` | `number` | `0.3` | Min similarity score (0–1) for search results |
+| `similarityThreshold` | `number` | `0.3` | Min similarity score (0-1) for search results |
 | `deduplicationThreshold` | `number` | `0.95` | Min similarity to consider a memory a duplicate |
 
 ## How capture works
@@ -132,6 +219,31 @@ Not every message is stored. The plugin uses pattern matching to detect text wor
 Messages shorter than 20 characters or longer than 2,000 characters are ignored. Duplicates (similarity >= 0.95) are automatically skipped.
 
 Each stored memory is auto-categorized as one of: `preference`, `decision`, `project`, `technical`, `fact`, or `general`.
+
+## Troubleshooting
+
+### `plugins.installs.*.source: Invalid input`
+
+The `source` field only accepts `"npm"`, `"archive"`, or `"path"`. If you installed manually, use `"path"`:
+
+```json
+"source": "path"
+```
+
+### `Index "..." not found`
+
+The plugin does not auto-create indexes. Create one in the [Pinecone dashboard](https://app.pinecone.io) with:
+- Type: **Serverless**
+- Embedding: **Integrated (Inference)** with any supported model
+- Source field: `content`
+
+### Memories not being captured
+
+Check that `autoCapture` is `true` in your config and that your messages match at least one capture pattern. Short messages (< 20 chars) and very long messages (> 2000 chars) are ignored.
+
+### Memories not being recalled
+
+Check that `autoRecall` is `true` and that your prompt is at least 5 characters. Lower `similarityThreshold` if results are too strict.
 
 ## Development
 
