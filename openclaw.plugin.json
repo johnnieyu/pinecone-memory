@@ -52,6 +52,21 @@
         "minimum": 0,
         "maximum": 1,
         "description": "Minimum similarity to consider a memory a duplicate (0-1)"
+      },
+      "captureMode": {
+        "type": "string",
+        "enum": ["heuristic", "llm"],
+        "default": "heuristic",
+        "description": "Memory capture strategy: 'heuristic' uses regex pattern matching, 'llm' uses an LLM to extract and reconcile facts"
+      },
+      "openaiApiKey": {
+        "type": "string",
+        "description": "OpenAI API key (supports ${OPENAI_API_KEY} syntax). Required when captureMode is 'llm'"
+      },
+      "llmModel": {
+        "type": "string",
+        "default": "gpt-4o-mini",
+        "description": "OpenAI model to use for fact extraction and reconciliation"
       }
     },
     "required": ["pineconeApiKey"]
@@ -97,6 +112,22 @@
       "label": "Dedup Threshold",
       "placeholder": "0.95",
       "help": "Memories above this similarity score are considered duplicates and skipped",
+      "advanced": true
+    },
+    "captureMode": {
+      "label": "Capture Mode",
+      "help": "Use 'heuristic' for fast regex-based capture or 'llm' for higher-quality LLM-driven extraction"
+    },
+    "openaiApiKey": {
+      "label": "OpenAI API Key",
+      "sensitive": true,
+      "placeholder": "sk-...",
+      "help": "Required when Capture Mode is 'llm' (or use ${OPENAI_API_KEY})"
+    },
+    "llmModel": {
+      "label": "LLM Model",
+      "placeholder": "gpt-4o-mini",
+      "help": "OpenAI model used for fact extraction and memory reconciliation",
       "advanced": true
     }
   }

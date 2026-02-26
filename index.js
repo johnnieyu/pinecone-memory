@@ -1,5 +1,6 @@
 import { Pinecone } from "@pinecone-database/pinecone";
 import { randomUUID } from "node:crypto";
+import OpenAI from "openai";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,6 +124,187 @@ function extractConciseFacts(messages, { minFactLength = 15, maxFactLength = 280
 }
 
 // ---------------------------------------------------------------------------
+// LLM prompts & functions
+// ---------------------------------------------------------------------------
+
+const FACT_EXTRACTION_PROMPT = `You are a Developer Knowledge Organizer. Your task is to extract concise, standalone facts from the provided conversation.
+
+Focus on extracting:
+1. Developer preferences (tools, languages, frameworks, coding style)
+2. Technical decisions (architecture choices, library selections, trade-offs)
+3. Project details (stack, structure, deployment, environments)
+4. Workflow conventions (branching strategy, CI/CD, review process)
+5. Important context (deadlines, constraints, team structure)
+6. Personal details (name, role, location, timezone)
+
+Rules:
+- Each fact must be a single, self-contained sentence
+- Use third person ("The user prefers..." not "I prefer...")
+- Be concise — under 100 characters per fact when possible
+- Do not extract trivial, obvious, or overly generic statements
+- Do not extract code snippets or implementation details
+- If no meaningful facts can be extracted, return an empty array
+
+Return a JSON object: { "facts": ["fact1", "fact2", ...] }`;
+
+const MEMORY_UPDATE_PROMPT = `You are a memory manager. You will be given a list of new facts and, for each fact, a set of existing memories that are semantically similar.
+
+For each new fact, decide ONE action:
+- ADD: The fact is genuinely new information not covered by any existing memory.
+- UPDATE: The fact refines, corrects, or adds detail to an existing memory. Provide the updated text and the ID of the memory to update.
+- DELETE: The fact directly contradicts an existing memory (the old memory is now wrong). Provide the ID to delete. The new fact will be stored as a replacement.
+- NONE: The fact is already captured by an existing memory — no action needed.
+
+Rules:
+- Prefer UPDATE over ADD when an existing memory covers the same topic
+- Prefer DELETE over UPDATE when the new fact contradicts the old memory
+- Only use NONE when the existing memory already says essentially the same thing
+- When updating, merge information — don't lose details from the old memory unless contradicted
+
+Return a JSON object: { "memory": [{ "id": "<existing_memory_id or 'new'>", "text": "<fact text>", "event": "ADD|UPDATE|DELETE|NONE", "old_memory": "<text of old memory if UPDATE or DELETE, else null>" }] }`;
+
+function createOpenAIClient(config) {
+  const apiKey = resolveEnvVars(config.openaiApiKey);
+  if (!apiKey) {
+    throw new Error("openaiApiKey is required when captureMode is 'llm'");
+  }
+  return new OpenAI({ apiKey });
+}
+
+async function llmExtractFacts(openai, model, messages) {
+  const conversationText = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+            : "";
+      return `${m.role}: ${stripMemoryTags(text)}`;
+    })
+    .filter((line) => line.length > 6)
+    .join("\n");
+
+  if (!conversationText.trim()) return [];
+
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: FACT_EXTRACTION_PROMPT },
+      { role: "user", content: conversationText },
+    ],
+  });
+
+  const raw = response.choices?.[0]?.message?.content;
+  if (!raw) return [];
+
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed.facts) ? parsed.facts.filter((f) => typeof f === "string" && f.trim()) : [];
+}
+
+async function llmReconcileMemories(openai, model, facts, db, topK = 3, threshold = 0.3) {
+  const factsWithContext = [];
+
+  for (const fact of facts) {
+    const nearby = await db.search(fact, topK, threshold);
+    const existingMemories = nearby.map((hit) => ({
+      id: hit._id,
+      text: extractHitContent(hit),
+      score: hit._score,
+    }));
+    factsWithContext.push({ fact, existingMemories });
+  }
+
+  const prompt = factsWithContext
+    .map((fc, i) => {
+      const memLines =
+        fc.existingMemories.length > 0
+          ? fc.existingMemories.map((m) => `  - [${m.id}] (score: ${m.score.toFixed(2)}): ${m.text}`).join("\n")
+          : "  (no existing memories found)";
+      return `Fact ${i + 1}: ${fc.fact}\nExisting memories:\n${memLines}`;
+    })
+    .join("\n\n");
+
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: MEMORY_UPDATE_PROMPT },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = response.choices?.[0]?.message?.content;
+  if (!raw) return [];
+
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed.memory) ? parsed.memory : [];
+}
+
+async function applyMemoryDecisions(decisions, db, logger) {
+  const stats = { added: 0, updated: 0, deleted: 0, none: 0 };
+
+  for (const decision of decisions) {
+    const event = (decision.event ?? "").toUpperCase();
+    const text = decision.text?.trim();
+
+    try {
+      switch (event) {
+        case "ADD": {
+          if (!text) break;
+          const id = randomUUID();
+          await db.store(id, text, {
+            category: detectCategory(text),
+            role: "llm-extract",
+            capturedAt: new Date().toISOString(),
+          });
+          stats.added += 1;
+          break;
+        }
+        case "UPDATE": {
+          if (!text || !decision.id || decision.id === "new") break;
+          await db.update(decision.id, text, {
+            category: detectCategory(text),
+            role: "llm-extract",
+            capturedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+          stats.updated += 1;
+          break;
+        }
+        case "DELETE": {
+          if (!decision.id || decision.id === "new") break;
+          await db.delete(decision.id);
+          if (text) {
+            const id = randomUUID();
+            await db.store(id, text, {
+              category: detectCategory(text),
+              role: "llm-extract",
+              capturedAt: new Date().toISOString(),
+            });
+          }
+          stats.deleted += 1;
+          break;
+        }
+        case "NONE":
+          stats.none += 1;
+          break;
+        default:
+          logger.warn(`pinecone-memory: unknown decision event "${event}"`);
+      }
+    } catch (err) {
+      logger.warn(`pinecone-memory: failed to apply ${event} decision: ${err.message}`);
+    }
+  }
+
+  return stats;
+}
+
+// ---------------------------------------------------------------------------
 // PineconeMemoryDB
 // ---------------------------------------------------------------------------
 
@@ -208,6 +390,12 @@ export {
   similarity,
   isContradiction,
   PineconeMemoryDB,
+  FACT_EXTRACTION_PROMPT,
+  MEMORY_UPDATE_PROMPT,
+  createOpenAIClient,
+  llmExtractFacts,
+  llmReconcileMemories,
+  applyMemoryDecisions,
 };
 
 // ---------------------------------------------------------------------------
@@ -222,15 +410,25 @@ export default function register(api) {
   const autoRecall = config.autoRecall !== false;
   const topK = config.topK ?? 5;
   const similarityThreshold = config.similarityThreshold ?? 0.3;
-  const captureMode = config.captureMode ?? "heuristic"; // heuristic | llm (reserved)
+  const captureMode = config.captureMode ?? "heuristic";
   const updateThreshold = config.updateThreshold ?? 0.72;
   const deleteThreshold = config.deleteThreshold ?? 0.45;
   const summaryTopK = config.summaryTopK ?? 3;
   const minFactLength = config.minFactLength ?? 15;
   const maxFactLength = config.maxFactLength ?? 280;
+  const llmModel = config.llmModel ?? "gpt-4o-mini";
+
+  let openaiClient = null;
+  if (captureMode === "llm") {
+    try {
+      openaiClient = createOpenAIClient(config);
+    } catch (err) {
+      api.logger.warn(`pinecone-memory: failed to create OpenAI client: ${err.message}; falling back to heuristic`);
+    }
+  }
 
   api.logger.info(
-    `pinecone-memory: registered (index: ${db.indexName}, ns: ${db.namespace}, autoRecall: ${autoRecall}, autoCapture: ${autoCapture}, captureMode: ${captureMode})`
+    `pinecone-memory: registered (index: ${db.indexName}, ns: ${db.namespace}, autoRecall: ${autoRecall}, autoCapture: ${autoCapture}, captureMode: ${captureMode}${captureMode === "llm" ? `, model: ${llmModel}` : ""})`
   );
 
   // -------------------------------------------------------------------------
@@ -270,72 +468,88 @@ export default function register(api) {
   // -------------------------------------------------------------------------
   // Hook: agent_end — Capture
   // -------------------------------------------------------------------------
+
+  async function heuristicCapture(messages) {
+    const facts = extractConciseFacts(messages, { minFactLength, maxFactLength });
+    if (facts.length === 0) return;
+
+    let added = 0;
+    let updated = 0;
+    let deleted = 0;
+    let none = 0;
+
+    for (const fact of facts) {
+      const category = detectCategory(fact);
+      const nearby = await db.search(fact, summaryTopK, deleteThreshold);
+
+      const exactDup = nearby.find(
+        (hit) =>
+          (typeof hit._score === "number" && hit._score >= db.deduplicationThreshold) ||
+          similarity(fact, extractHitContent(hit)) >= 0.95
+      );
+      if (exactDup) {
+        none += 1;
+        continue;
+      }
+
+      const contradiction = nearby.find((hit) => isContradiction(fact, extractHitContent(hit)));
+      if (contradiction && contradiction._score >= deleteThreshold) {
+        await db.delete(contradiction._id);
+        deleted += 1;
+        continue;
+      }
+
+      const updateTarget = nearby.find(
+        (hit) =>
+          (typeof hit._score === "number" && hit._score >= updateThreshold) ||
+          similarity(fact, extractHitContent(hit)) >= updateThreshold
+      );
+      if (updateTarget) {
+        await db.update(updateTarget._id, fact, {
+          category,
+          role: "summary",
+          capturedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        updated += 1;
+        continue;
+      }
+
+      const id = randomUUID();
+      await db.store(id, fact, {
+        category,
+        role: "summary",
+        capturedAt: new Date().toISOString(),
+      });
+      added += 1;
+    }
+
+    api.logger.info(
+      `pinecone-memory: capture summary facts=${facts.length} added=${added} updated=${updated} deleted=${deleted} none=${none}`
+    );
+  }
+
   if (autoCapture) {
     api.on("agent_end", async (event) => {
       try {
         const messages = (event.messages ?? []).slice(-10);
 
-        const facts = extractConciseFacts(messages, { minFactLength, maxFactLength });
-        if (facts.length === 0) return;
-
-        if (captureMode === "llm") {
-          api.logger.warn("pinecone-memory: captureMode=llm is not configured in this plugin yet; falling back to heuristic");
+        if (captureMode === "llm" && openaiClient) {
+          try {
+            const facts = await llmExtractFacts(openaiClient, llmModel, messages);
+            if (facts.length === 0) return;
+            const decisions = await llmReconcileMemories(openaiClient, llmModel, facts, db, summaryTopK, similarityThreshold);
+            const stats = await applyMemoryDecisions(decisions, db, api.logger);
+            api.logger.info(
+              `pinecone-memory: llm capture facts=${facts.length} added=${stats.added} updated=${stats.updated} deleted=${stats.deleted} none=${stats.none}`
+            );
+            return;
+          } catch (err) {
+            api.logger.warn(`pinecone-memory: llm capture failed, falling back to heuristic: ${err.message}`);
+          }
         }
 
-        let added = 0;
-        let updated = 0;
-        let deleted = 0;
-        let none = 0;
-
-        for (const fact of facts) {
-          const category = detectCategory(fact);
-          const nearby = await db.search(fact, summaryTopK, deleteThreshold);
-
-          const exactDup = nearby.find(
-            (hit) =>
-              (typeof hit._score === "number" && hit._score >= db.deduplicationThreshold) ||
-              similarity(fact, extractHitContent(hit)) >= 0.95
-          );
-          if (exactDup) {
-            none += 1;
-            continue;
-          }
-
-          const contradiction = nearby.find((hit) => isContradiction(fact, extractHitContent(hit)));
-          if (contradiction && contradiction._score >= deleteThreshold) {
-            await db.delete(contradiction._id);
-            deleted += 1;
-            continue;
-          }
-
-          const updateTarget = nearby.find(
-            (hit) =>
-              (typeof hit._score === "number" && hit._score >= updateThreshold) ||
-              similarity(fact, extractHitContent(hit)) >= updateThreshold
-          );
-          if (updateTarget) {
-            await db.update(updateTarget._id, fact, {
-              category,
-              role: "summary",
-              capturedAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            });
-            updated += 1;
-            continue;
-          }
-
-          const id = randomUUID();
-          await db.store(id, fact, {
-            category,
-            role: "summary",
-            capturedAt: new Date().toISOString(),
-          });
-          added += 1;
-        }
-
-        api.logger.info(
-          `pinecone-memory: capture summary facts=${facts.length} added=${added} updated=${updated} deleted=${deleted} none=${none}`
-        );
+        await heuristicCapture(messages);
       } catch (err) {
         api.logger.warn(`pinecone-memory: capture failed: ${err.message}`);
       }
@@ -552,6 +766,9 @@ export default function register(api) {
           console.log(`  Auto-capture:  ${autoCapture}`);
           console.log(`  Auto-recall:   ${autoRecall}`);
           console.log(`  Capture mode:  ${captureMode}`);
+          if (captureMode === "llm") {
+            console.log(`  LLM model:     ${llmModel}`);
+          }
           console.log(`  Top-K:         ${topK}`);
           console.log(`  Threshold:     ${similarityThreshold}`);
           console.log(`  Dedup:         ${db.deduplicationThreshold}`);
